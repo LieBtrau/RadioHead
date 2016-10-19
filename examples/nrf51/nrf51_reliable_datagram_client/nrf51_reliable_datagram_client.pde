@@ -1,38 +1,43 @@
-// rf95_reliable_datagram_client.pde
+// nrf51_reliable_datagram_client.pde
 // -*- mode: C++ -*-
 // Example sketch showing how to create a simple addressed, reliable messaging client
-// with the RHReliableDatagram class, using the RH_RF95 driver to control a RF95 radio.
-// It is designed to work with the other example rf95_reliable_datagram_server
-// Tested with Anarduino MiniWirelessLoRa
+// with the RHReliableDatagram class, using the RH_NRF51 driver to control a NRF51 radio.
+// It is designed to work with the other example nrf51_reliable_datagram_server
+// Tested on RedBearLabs nRF51822 and BLE Nano kit, built with Arduino 1.6.4.
+// See http://redbearlab.com/getting-started-nrf51822/
+// for how to set up your Arduino build environment
 
 #include <RHReliableDatagram.h>
-#include <RH_RF95.h>
-#include <SPI.h>
+#include <RH_NRF51.h>
 
 #define CLIENT_ADDRESS 1
 #define SERVER_ADDRESS 2
 
 // Singleton instance of the radio driver
-RH_RF95 driver;
+RH_NRF51 driver;
 
 // Class to manage message delivery and receipt, using the driver declared above
 RHReliableDatagram manager(driver, CLIENT_ADDRESS);
 
 void setup() 
-{
+{  
+  delay(1000); // Wait for serial port etc to be ready
   Serial.begin(9600);
+  while (!Serial) 
+    ; // wait for serial port to connect. 
+
   if (!manager.init())
     Serial.println("init failed");
-  // Defaults after init are 434.0MHz, 13dBm, Bw = 125 kHz, Cr = 4/5, Sf = 128chips/symbol, CRC on
+  // Defaults after init are 2.402 GHz (channel 2), 2Mbps, 0dBm
 }
 
 uint8_t data[] = "Hello World!";
 // Dont put this on the stack:
-uint8_t buf[RH_RF95_MAX_MESSAGE_LEN];
+uint8_t buf[RH_NRF51_MAX_MESSAGE_LEN];
 
 void loop()
 {
-  Serial.println("Sending to rf95_reliable_datagram_server");
+  Serial.println("Sending to nrf51_reliable_datagram_server");
     
   // Send a message to manager_server
   if (manager.sendtoWait(data, sizeof(data), SERVER_ADDRESS))
@@ -49,7 +54,7 @@ void loop()
     }
     else
     {
-      Serial.println("No reply, is rf95_reliable_datagram_server running?");
+      Serial.println("No reply, is nrf51_reliable_datagram_server running?");
     }
   }
   else

@@ -1,7 +1,7 @@
 // RH_RF24.cpp
 //
 // Copyright (C) 2011 Mike McCauley
-// $Id: RH_RF24.cpp,v 1.10 2014/09/17 22:41:47 mikem Exp $
+// $Id: RH_RF24.cpp,v 1.17 2016/08/17 01:53:21 mikem Exp mikem $
 
 #include <RH_RF24.h>
 // Generated with Silicon Labs WDS software:
@@ -17,11 +17,13 @@ uint8_t RH_RF24::_interruptCount = 0; // Index into _deviceForInterrupt for next
 // which was generated with the Silicon Labs WDS program
 PROGMEM const uint8_t RFM26_CONFIGURATION_DATA[] = RADIO_CONFIGURATION_DATA_ARRAY;
 
-// These configurations were all generated originally by the Silicon LAbs WDS configuration tool.
+// These configurations were all generated originally by the Silicon LAbs WDS configuration tool, configured with
+// a 30MHz XO. 
 // The configurations were imported into RH_RF24, the complete properties set dumped to a file with printRegisters, then 
 // RH_RF24_property_data/convert.pl was used to generate the entry for this table.
 // Contributions of new complete and tested ModemConfigs ready to add to this list will be readily accepted.
-// Casual suggestions of new schemes without working examples will probably be passed over
+// Casual suggestions of new schemes without working examples will probably be passed over.
+// Devices with an XO of other than 30MHz will result in incorrect radio frequency and other settings.
 PROGMEM static const RH_RF24::ModemConfig MODEM_CONFIG_TABLE[] =
 {
     // These were generated with convert.pl from data in RH_RF24_property_data
@@ -64,6 +66,7 @@ RH_RF24::RH_RF24(uint8_t slaveSelectPin, uint8_t interruptPin, uint8_t sdnPin, R
     _interruptPin = interruptPin;
     _sdnPin = sdnPin;
     _idleMode = RH_RF24_DEVICE_STATE_READY;
+    _myInterruptIndex = 0xff; // Not allocated yet
 }
 
 void RH_RF24::setIdleMode(uint8_t idleMode)
@@ -80,6 +83,9 @@ bool RH_RF24::init()
     int interruptNumber = digitalPinToInterrupt(_interruptPin);
     if (interruptNumber == NOT_AN_INTERRUPT)
 	return false;
+#ifdef RH_ATTACHINTERRUPT_TAKES_PIN_NUMBER
+    interruptNumber = _interruptPin;
+#endif
 
     // Initialise the radio
     power_on_reset();
@@ -113,16 +119,23 @@ bool RH_RF24::init()
     // ON some devices, notably most Arduinos, the interrupt pin passed in is actuallt the 
     // interrupt number. You have to figure out the interruptnumber-to-interruptpin mapping
     // yourself based on knwledge of what Arduino board you are running on.
-    _deviceForInterrupt[_interruptCount] = this;
-    if (_interruptCount == 0)
+    if (_myInterruptIndex == 0xff)
+    {
+	// First run, no interrupt allocated yet
+	if (_interruptCount <= RH_RF24_NUM_INTERRUPTS)
+	    _myInterruptIndex = _interruptCount++;
+	else
+	    return false; // Too many devices, not enough interrupt vectors
+    }
+    _deviceForInterrupt[_myInterruptIndex] = this;
+    if (_myInterruptIndex == 0)
 	attachInterrupt(interruptNumber, isr0, FALLING);
-    else if (_interruptCount == 1)
+    else if (_myInterruptIndex == 1)
 	attachInterrupt(interruptNumber, isr1, FALLING);
-    else if (_interruptCount == 2)
+    else if (_myInterruptIndex == 2)
 	attachInterrupt(interruptNumber, isr2, FALLING);
     else
 	return false; // Too many devices, not enough interrupt vectors
-    _interruptCount++;
 
     // Ensure we get the interrupts we need, irrespective of whats in the radio_config
     uint8_t int_ctl[] = {RH_RF24_MODEM_INT_STATUS_EN | RH_RF24_PH_INT_STATUS_EN, 0xff, 0xff, 0x00 };
@@ -334,6 +347,9 @@ bool RH_RF24::send(const uint8_t* data, uint8_t len)
     waitPacketSent(); // Make sure we dont interrupt an outgoing message
     setModeIdle(); // Prevent RX while filling the fifo
 
+    if (!waitCAD()) 
+	return false;  // Check channel activity
+
     // Put the payload in the FIFO
     // First the length in fixed length field 1. This wont appear in the receiver fifo since
     // we have turned off IN_FIFO in PKT_LEN
@@ -350,11 +366,12 @@ bool RH_RF24::send(const uint8_t* data, uint8_t len)
     _txBufSentIndex = 0;
 
     // Set the field 2 length to the variable payload length
-    uint8_t l[] = { len +  RH_RF24_HEADER_LEN};
+    uint8_t l[] = { (uint8_t)(len + RH_RF24_HEADER_LEN)};
     set_properties(RH_RF24_PROPERTY_PKT_FIELD_2_LENGTH_7_0, l, sizeof(l));
 
     sendNextFragment();
     setModeTx();
+    return true;
 }
 
 // This is different to command() since we must not wait for CTS
@@ -369,6 +386,7 @@ bool RH_RF24::writeTxFifo(uint8_t *data, uint8_t len)
 	_spi.transfer(*data++);
     digitalWrite(_slaveSelectPin, HIGH);
     ATOMIC_BLOCK_END;
+    return true;
 }
 
 void RH_RF24::sendNextFragment()
@@ -518,11 +536,7 @@ bool RH_RF24::setModemConfig(ModemConfigChoice index)
         return false;
 
     ModemConfig cfg;
-#if defined(__AVR__)
     memcpy_P(&cfg, &MODEM_CONFIG_TABLE[index], sizeof(RH_RF24::ModemConfig));
-#elif defined(__arm__)
-    memcpy(&cfg, &MODEM_CONFIG_TABLE[index], sizeof(RH_RF24::ModemConfig));
-#endif
     setModemRegisters(&cfg);
 
     return true;
@@ -530,7 +544,7 @@ bool RH_RF24::setModemConfig(ModemConfigChoice index)
 
 void RH_RF24::setPreambleLength(uint16_t bytes)
 {
-    uint8_t config[] = { bytes, 0x14, 0x00, 0x00, 
+    uint8_t config[] = { (uint8_t)bytes, 0x14, 0x00, 0x00, 
 			 RH_RF24_PREAMBLE_FIRST_1 | RH_RF24_PREAMBLE_LENGTH_BYTES | RH_RF24_PREAMBLE_STANDARD_1010};
     set_properties(RH_RF24_PROPERTY_PREAMBLE_TX_LENGTH, config, sizeof(config));
 }
@@ -541,7 +555,7 @@ bool RH_RF24::setCRCPolynomial(CRCPolynomial polynomial)
 	polynomial <= CRC_Castagnoli)
     {
 	// Caution this only has effect if CRCs are enabled
-	uint8_t config[] = { (polynomial & RH_RF24_CRC_MASK) | RH_RF24_CRC_SEED_ALL_1S };
+	uint8_t config[] = { (uint8_t)((polynomial & RH_RF24_CRC_MASK) | RH_RF24_CRC_SEED_ALL_1S) };
 	return set_properties(RH_RF24_PROPERTY_PKT_CRC_CONFIG, config, sizeof(config));
     }
     else
@@ -552,7 +566,7 @@ void RH_RF24::setSyncWords(const uint8_t* syncWords, uint8_t len)
 {
     if (len > 4 || len < 1)
 	return;
-    uint8_t config[] = { len-1, 0, 0, 0, 0};
+    uint8_t config[] = { (uint8_t)(len-1), 0, 0, 0, 0};
     memcpy(config+1, syncWords, len);
     set_properties(RH_RF24_PROPERTY_SYNC_CONFIG, config, sizeof(config));
 }
@@ -600,7 +614,7 @@ bool RH_RF24::setFrequency(float centre, float afcPullInRange)
     }
 
     // Set the MODEM_CLKGEN_BAND (not documented)
-    uint8_t modem_clkgen[] = { band+8 };
+    uint8_t modem_clkgen[] = { (uint8_t)(band + 8) };
     if (!set_properties(RH_RF24_PROPERTY_MODEM_CLKGEN_BAND, modem_clkgen, sizeof(modem_clkgen)))
 	return false;
 
@@ -619,7 +633,7 @@ bool RH_RF24::setFrequency(float centre, float afcPullInRange)
     unsigned int m0 = (m - m2 * 0x10000 - m1 * 0x100); 
 
     // PROP_FREQ_CONTROL_GROUP
-    uint8_t freq_control[] = { n, m2, m1, m0 };
+    uint8_t freq_control[] = { (uint8_t)n, (uint8_t)m2, (uint8_t)m1, (uint8_t)m0 };
     return set_properties(RH_RF24_PROPERTY_FREQ_CONTROL_INTE, freq_control, sizeof(freq_control));
 }
 
@@ -679,7 +693,7 @@ void RH_RF24::setModeTx()
 	command(RH_RF24_CMD_GPIO_PIN_CFG, config, sizeof(config));
 
 	uint8_t tx_params[] = { 0x00, 
-				(_idleMode << 4) | RH_RF24_CONDITION_RETRANSMIT_NO | RH_RF24_CONDITION_START_IMMEDIATE};
+				(uint8_t)((_idleMode << 4) | RH_RF24_CONDITION_RETRANSMIT_NO | RH_RF24_CONDITION_START_IMMEDIATE)};
 	command(RH_RF24_CMD_START_TX, tx_params, sizeof(tx_params));
 	_mode = RHModeTx;
     }
@@ -774,19 +788,12 @@ bool RH_RF24::configure(const uint8_t* commands)
     // Each command starts with a count of the bytes in that command:
     // <bytecount> <command> <bytecount-2 bytes of args/data>
     uint8_t next_cmd_len;
-#if defined(__AVR__)
+    
     while (memcpy_P(&next_cmd_len, commands, 1), next_cmd_len > 0)
-#elif defined(__arm__)
-    while (memcpy(&next_cmd_len, commands, 1), next_cmd_len > 0)
-#endif
     {
 	uint8_t buf[20]; // As least big as the biggest permitted command/property list of 15
-#if defined(__AVR__)
 	memcpy_P(buf, commands+1, next_cmd_len);
-#elif defined(__arm__)
-    memcpy(buf, commands+1, next_cmd_len);
-#endif
-    command(buf[0], buf+1, next_cmd_len - 1);
+	command(buf[0], buf+1, next_cmd_len - 1);
 	commands += (next_cmd_len + 1);
     }
     return true;
@@ -881,15 +888,8 @@ uint8_t RH_RF24::frr_read(uint8_t reg)
     return ret;
 }
 
-// Defines the commands we can interrogate in printRegisters
-typedef struct
-{
-    uint8_t      cmd;       ///< The command number
-    uint8_t      replyLen;  ///< Number of bytes in the reply stream (after the CTS)
-}   CommandInfo;
-
 // List of command replies to be printed by prinRegisters()
-PROGMEM static const CommandInfo commands[] =
+PROGMEM static const RH_RF24::CommandInfo commands[] =
 {
     { RH_RF24_CMD_PART_INFO,            8 },
     { RH_RF24_CMD_FUNC_INFO,            6 },
@@ -1121,16 +1121,13 @@ PROGMEM static const uint16_t properties[] =
 
 bool RH_RF24::printRegisters()
 {  
+#ifdef RH_HAVE_SERIAL
     uint8_t i;
     // First print the commands that return interesting data
     for (i = 0; i < NUM_COMMAND_INFO; i++)
     {
 	CommandInfo cmd;
-#if defined(__AVR__)
-    memcpy_P(&cmd, &commands[i], sizeof(cmd));
-#elif defined(__arm__)
-    memcpy(&cmd, &commands[i], sizeof(cmd));
-#endif
+	memcpy_P(&cmd, &commands[i], sizeof(cmd));
 	uint8_t buf[10]; // Big enough for the biggest command reply
 	if (command(cmd.cmd, NULL, 0, buf, cmd.replyLen))
 	{
@@ -1152,11 +1149,7 @@ bool RH_RF24::printRegisters()
     for (i = 0; i < NUM_PROPERTIES; i++)
     {
 	uint16_t prop;
-#if defined(__AVR__)
 	memcpy_P(&prop, &properties[i], sizeof(prop));
-#elif defined(__arm__)
-    memcpy(&prop, &properties[i], sizeof(prop));
-#endif
 	uint8_t result;
 	get_properties(prop, &result, 1);
 	Serial.print("prop: ");
@@ -1165,4 +1158,6 @@ bool RH_RF24::printRegisters()
 	Serial.print(result, HEX);
         Serial.println("");
     }
+#endif
+    return true;
 }

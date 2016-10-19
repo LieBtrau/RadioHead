@@ -1,18 +1,28 @@
 // RH_ASK.cpp
 //
 // Copyright (C) 2014 Mike McCauley
-// $Id: RH_ASK.cpp,v 1.14 2014/08/27 22:00:36 mikem Exp $
+// $Id: RH_ASK.cpp,v 1.19 2016/08/17 01:53:21 mikem Exp mikem $
 
 #include <RH_ASK.h>
 #include <RHCRC.h>
 
-#if (RH_PLATFORM == RH_PLATFORM_STM32) || defined(MCU_STM32F103RB)// Maple etc
+#if (RH_PLATFORM == RH_PLATFORM_STM32) // Maple etc
 HardwareTimer timer(MAPLE_TIMER);
+
+#endif
+
+#if (RH_PLATFORM == RH_PLATFORM_ESP8266)
+    // interrupt handler and related code must be in RAM on ESP8266,
+    // according to issue #46.
+    #define INTERRUPT_ATTR ICACHE_RAM_ATTR
+#else
+    #define INTERRUPT_ATTR
 #endif
 
 // RH_ASK on Arduino uses Timer 1 to generate interrupts 8 times per bit interval
 // Define RH_ASK_ARDUINO_USE_TIMER2 if you want to use Timer 2 instead of Timer 1 on Arduino
-// You may need this to work around other librraies that insiston using timer 1
+// You may need this to work around other librraies that insist on using timer 1
+// Should be moved to header file
 //#define RH_ASK_ARDUINO_USE_TIMER2
 
 // Interrupt handler uses this to find the most recently initialised instance of this driver
@@ -37,7 +47,8 @@ RH_ASK::RH_ASK(uint16_t speed, uint8_t rxPin, uint8_t txPin, uint8_t pttPin, boo
     _rxPin(rxPin),
     _txPin(txPin),
     _pttPin(pttPin),
-    _pttInverted(pttInverted)
+    _pttInverted(pttInverted),
+    _rxInverted(false)
 {
     // Initialise the first 8 nibbles of the tx buffer to be the standard
     // preamble. We will append messages after that. 0x38, 0x2c is the start symbol before
@@ -70,7 +81,6 @@ bool RH_ASK::init()
 
     // Ready to go
     setModeIdle();
-
     timerSetup();
 
     return true;
@@ -114,11 +124,7 @@ uint8_t RH_ASK::timerCalc(uint16_t speed, uint16_t max_ticks, uint16_t *nticks)
 	// Integer arithmetic courtesy Jim Remington
 	// 1/Amount of time per CPU clock tick (in seconds)
 	uint16_t prescalerValue;
-#if defined(__AVR__)
 	memcpy_P(&prescalerValue, &prescalers[prescaler], sizeof(uint16_t));
-#elif defined(__arm__)
-    memcpy(&prescalerValue, &prescalers[prescaler], sizeof(uint16_t));
-#endif
         unsigned long inv_clock_time = F_CPU / ((unsigned long)prescalerValue);
         // number of prescaled ticks needed to handle bit time @ speed
         ulticks = inv_clock_time / inv_bit_time;
@@ -193,13 +199,13 @@ void RH_ASK::timerSetup()
     OCR0A = uint8_t(nticks);
 
     // Set mask to fire interrupt when OCF0A bit is set in TIFR0
-#ifdef TIMSK0
+   #ifdef TIMSK0
     // ATtiny84
     TIMSK0 |= _BV(OCIE0A);
-#else
+   #else
     // ATtiny85
     TIMSK |= _BV(OCIE0A);
-#endif
+   #endif
 
 
  #elif defined(__arm__) && defined(CORE_TEENSY)
@@ -208,24 +214,52 @@ void RH_ASK::timerSetup()
     void TIMER1_COMPA_vect(void);
     t->begin(TIMER1_COMPA_vect, 125000 / _speed);
 
- #elif defined(MCU_STM32F103RB)
-    // Pause the timer while we're configuring it
-    timer.pause();
-    timer.setPeriod((1000000/8)/_speed);
-    // Set up an interrupt on channel 1
-    timer.setChannel1Mode(TIMER_OUTPUT_COMPARE);
-    timer.setCompare(TIMER_CH1, 1);  // Interrupt 1 count after each update
-    void interrupt(); // defined below
-    timer.attachCompare1Interrupt(interrupt);
+ #elif defined (__arm__) && defined(ARDUINO_ARCH_SAMD)
+    // Arduino Zero
+    #define RH_ASK_ZERO_TIMER TC3
+    // Clock speed is 48MHz, prescaler of 64 gives a good range of available speeds vs precision
+    #define RH_ASK_ZERO_PRESCALER 64
+    #define RH_ASK_ZERO_TIMER_IRQ TC3_IRQn
 
-    // Refresh the timer's count, prescale, and overflow
-    timer.refresh();
+    // Enable clock for TC
+    REG_GCLK_CLKCTRL = (uint16_t) (GCLK_CLKCTRL_CLKEN | GCLK_CLKCTRL_GEN_GCLK0 | GCLK_CLKCTRL_ID(GCM_TCC2_TC3)) ;
+    while ( GCLK->STATUS.bit.SYNCBUSY == 1 ); // wait for sync
+    
+    // The type cast must fit with the selected timer mode
+    TcCount16* TC = (TcCount16*)RH_ASK_ZERO_TIMER; // get timer struct
+    
+    TC->CTRLA.reg &= ~TC_CTRLA_ENABLE;   // Disable TC
+    while (TC->STATUS.bit.SYNCBUSY == 1); // wait for sync
+    
+    TC->CTRLA.reg |= TC_CTRLA_MODE_COUNT16;  // Set Timer counter Mode to 16 bits
+    while (TC->STATUS.bit.SYNCBUSY == 1); // wait for sync
+    TC->CTRLA.reg |= TC_CTRLA_WAVEGEN_MFRQ; // Set TC as Match Frequency
+    while (TC->STATUS.bit.SYNCBUSY == 1); // wait for sync
 
-    // Start the timer counting
-    timer.resume();
-
- #elif defined(__arm__) && !defined(MCU_STM32F103RB)
+    // Compute the count required to achieve the requested baud (with 8 interrupts per bit)
+    uint32_t rc = (VARIANT_MCK / _speed) / RH_ASK_ZERO_PRESCALER / 8;
+    
+    TC->CTRLA.reg |= TC_CTRLA_PRESCALER_DIV64;   // Set prescaler to agree with RH_ASK_ZERO_PRESCALER
+    while (TC->STATUS.bit.SYNCBUSY == 1); // wait for sync
+    
+    TC->CC[0].reg = rc; // FIXME
+    while (TC->STATUS.bit.SYNCBUSY == 1); // wait for sync
+    
+    // Interrupts
+    TC->INTENSET.reg = 0;              // disable all interrupts
+    TC->INTENSET.bit.MC0 = 1;          // enable compare match to CC0
+    
+    // Enable InterruptVector
+    NVIC_ClearPendingIRQ(RH_ASK_ZERO_TIMER_IRQ);
+    NVIC_EnableIRQ(RH_ASK_ZERO_TIMER_IRQ);
+    
+    // Enable TC
+    TC->CTRLA.reg |= TC_CTRLA_ENABLE;
+    while (TC->STATUS.bit.SYNCBUSY == 1); // wait for sync
+    
+ #elif defined(__arm__) && defined(ARDUINO_SAM_DUE)
     // Arduino Due
+    // Clock speed is 84MHz
     // Due has 9 timers in 3 blocks of 3.
     // We use timer 1 TC1_IRQn on TC0 channel 1, since timers 0, 2, 3, 4, 5 are used by the Servo library
     #define RH_ASK_DUE_TIMER TC0
@@ -310,15 +344,59 @@ void RH_ASK::timerSetup()
     // Start the timer counting
     timer.resume();
 
+#elif (RH_PLATFORM == RH_PLATFORM_STM32F2) // Photon
+    // Inspired by SparkIntervalTimer
+    // We use Timer 6
+    void TimerInterruptHandler(); // Forward declaration for interrupt handler
+    #define SYSCORECLOCK	60000000UL  // Timer clock tree uses core clock / 2
+    TIM_TimeBaseInitTypeDef timerInitStructure;
+    NVIC_InitTypeDef nvicStructure;
+    TIM_TypeDef* TIMx;
+    uint32_t period = (1000000 / 8) / _speed; // In microseconds
+    uint16_t prescaler = (uint16_t)(SYSCORECLOCK / 1000000UL) - 1; //To get TIM counter clock = 1MHz
+
+    attachSystemInterrupt(SysInterrupt_TIM6_Update, TimerInterruptHandler);
+    RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM6, ENABLE);
+    nvicStructure.NVIC_IRQChannel = TIM6_DAC_IRQn;
+    TIMx = TIM6;
+    nvicStructure.NVIC_IRQChannelPreemptionPriority = 10;
+    nvicStructure.NVIC_IRQChannelSubPriority = 1;
+    nvicStructure.NVIC_IRQChannelCmd = ENABLE;
+    NVIC_Init(&nvicStructure);
+    timerInitStructure.TIM_Prescaler = prescaler;
+    timerInitStructure.TIM_CounterMode = TIM_CounterMode_Up;
+    timerInitStructure.TIM_Period = period;
+    timerInitStructure.TIM_ClockDivision = TIM_CKD_DIV1;
+    timerInitStructure.TIM_RepetitionCounter = 0;
+    
+    TIM_TimeBaseInit(TIMx, &timerInitStructure);
+    TIM_ITConfig(TIMx, TIM_IT_Update, ENABLE);
+    TIM_Cmd(TIMx, ENABLE);
+
+#elif (RH_PLATFORM == RH_PLATFORM_CHIPKIT_CORE)
+    // UsingChipKIT Core on Arduino IDE
+    uint32_t chipkit_timer_interrupt_handler(uint32_t currentTime); // Forward declaration
+    attachCoreTimerService(chipkit_timer_interrupt_handler);
+
 #elif (RH_PLATFORM == RH_PLATFORM_UNO32)
+    // Under old MPIDE, which has been discontinued:
     // ON Uno32 we use timer1
     OpenTimer1(T1_ON | T1_PS_1_1 | T1_SOURCE_INT, (F_CPU / 8) / _speed);
     ConfigIntTimer1(T1_INT_ON | T1_INT_PRIOR_1);
+
+#elif (RH_PLATFORM == RH_PLATFORM_ESP8266)
+    void INTERRUPT_ATTR esp8266_timer_interrupt_handler(); // Forward declarat
+    // The - 120 is a heuristic to correct for interrupt handling overheads
+    _timerIncrement = (clockCyclesPerMicrosecond() * 1000000 / 8 / _speed) - 120;
+    timer0_isr_init();
+    timer0_attachInterrupt(esp8266_timer_interrupt_handler);
+    timer0_write(ESP.getCycleCount() + _timerIncrement);
+//    timer0_write(ESP.getCycleCount() + 41660000);
 #endif
 
 }
 
-void RH_ASK::setModeIdle()
+void INTERRUPT_ATTR RH_ASK::setModeIdle()
 {
     if (_mode != RHModeIdle)
     {
@@ -404,6 +482,9 @@ bool RH_ASK::send(const uint8_t* data, uint8_t len)
     // Wait for transmitter to become available
     waitPacketSent();
 
+    if (!waitCAD()) 
+	return false;  // Check channel activity
+
     // Encode the message length
     crc = RHcrc_ccitt_update(crc, count);
     p[index++] = symbols[count >> 4];
@@ -447,14 +528,11 @@ bool RH_ASK::send(const uint8_t* data, uint8_t len)
     // Start the low level interrupt handler sending symbols
     setModeTx();
 
-// FIXME
-    thisASKDriver = this;
-
     return true;
 }
 
 // Read the RX data input pin, taking into account platform type and inversion.
-bool RH_ASK::readRx()
+bool INTERRUPT_ATTR RH_ASK::readRx()
 {
     bool value;
 #if (RH_PLATFORM == RH_PLATFORM_GENERIC_AVR8)
@@ -466,7 +544,7 @@ bool RH_ASK::readRx()
 }
 
 // Write the TX output pin, taking into account platform type.
-void RH_ASK::writeTx(bool value)
+void INTERRUPT_ATTR RH_ASK::writeTx(bool value)
 {
 #if (RH_PLATFORM == RH_PLATFORM_GENERIC_AVR8)
     ((value) ? (RH_ASK_TX_PORT |= (1<<RH_ASK_TX_PIN)) : (RH_ASK_TX_PORT &= ~(1<<RH_ASK_TX_PIN)));
@@ -476,7 +554,7 @@ void RH_ASK::writeTx(bool value)
 }
 
 // Write the PTT output pin, taking into account platform type and inversion.
-void RH_ASK::writePtt(bool value)
+void INTERRUPT_ATTR RH_ASK::writePtt(bool value)
 {
 #if (RH_PLATFORM == RH_PLATFORM_GENERIC_AVR8)
  #if RH_ASK_PTT_PIN 
@@ -516,15 +594,25 @@ void TIMER1_COMPA_vect(void)
     thisASKDriver->handleTimerInterrupt();
 }
 
-#elif (RH_PLATFORM == RH_PLATFORM_ARDUINO) && defined(__arm__) && !defined(MCU_STM32F103RB)
-// Arduino Due
-void TC1_Handler()
+#elif (RH_PLATFORM == RH_PLATFORM_ARDUINO) && defined (__arm__) && defined(ARDUINO_ARCH_SAMD)
+// Arduino Zero
+void TC3_Handler()
 {
-    TC_GetStatus(TC0, 1);
+    // The type cast must fit with the selected timer mode
+    TcCount16* TC = (TcCount16*)RH_ASK_ZERO_TIMER; // get timer struct
+    TC->INTFLAG.bit.MC0 = 1;
     thisASKDriver->handleTimerInterrupt();
 }
 
-#elif ((RH_PLATFORM == RH_PLATFORM_ARDUINO) || (RH_PLATFORM == RH_PLATFORM_GENERIC_AVR8)) && !defined(MCU_STM32F103RB)
+#elif (RH_PLATFORM == RH_PLATFORM_ARDUINO) && defined(__arm__) && defined(ARDUINO_SAM_DUE)
+// Arduino Due
+void TC1_Handler()
+{
+    TC_GetStatus(RH_ASK_DUE_TIMER, 1);
+    thisASKDriver->handleTimerInterrupt();
+}
+
+#elif (RH_PLATFORM == RH_PLATFORM_ARDUINO) || (RH_PLATFORM == RH_PLATFORM_GENERIC_AVR8)
 // This is the interrupt service routine called when timer1 overflows
 // Its job is to output the next bit from the transmitter (every 8 calls)
 // and to call the PLL code if the receiver is enabled
@@ -534,9 +622,15 @@ ISR(RH_ASK_TIMER_VECTOR)
     thisASKDriver->handleTimerInterrupt();
 }
 
-#elif (RH_PLATFORM == RH_PLATFORM_MSP430) || (RH_PLATFORM == RH_PLATFORM_STM32 || RH_PLATFORM == RH_PLATFORM_STM32_NUCLEO)
+#elif (RH_PLATFORM == RH_PLATFORM_MSP430) || (RH_PLATFORM == RH_PLATFORM_STM32)
 // LaunchPad, Maple
 void interrupt()
+{
+    thisASKDriver->handleTimerInterrupt();
+}
+
+#elif (RH_PLATFORM == RH_PLATFORM_STM32F2) // Photon
+void TimerInterruptHandler()
 {
     thisASKDriver->handleTimerInterrupt();
 }
@@ -547,19 +641,40 @@ interrupt(TIMER0_A0_VECTOR) Timer_A_int(void)
     thisASKDriver->handleTimerInterrupt();
 };
 
+#elif (RH_PLATFORM == RH_PLATFORM_CHIPKIT_CORE)
+// Using ChipKIT Core on Arduino IDE
+uint32_t chipkit_timer_interrupt_handler(uint32_t currentTime) 
+{
+    thisASKDriver->handleTimerInterrupt();
+    return (currentTime + ((CORE_TICK_RATE * 1000)/8)/thisASKDriver->speed());
+}
+
 #elif (RH_PLATFORM == RH_PLATFORM_UNO32)
+// Under old MPIDE, which has been discontinued:
 extern "C"
 {
-void __ISR(_TIMER_1_VECTOR, ipl1) timerInterrupt(void)
-{
+ void __ISR(_TIMER_1_VECTOR, ipl1) timerInterrupt(void)
+ {
     thisASKDriver->handleTimerInterrupt();
     mT1ClearIntFlag(); // Clear timer 1 interrupt flag
 }
 }
+#elif (RH_PLATFORM == RH_PLATFORM_ESP8266)
+void INTERRUPT_ATTR esp8266_timer_interrupt_handler()
+{  
+//    timer0_write(ESP.getCycleCount() + 41660000);
+//    timer0_write(ESP.getCycleCount() + (clockCyclesPerMicrosecond() * 100) - 120 );
+    timer0_write(ESP.getCycleCount() + thisASKDriver->_timerIncrement);
+//    static int toggle = 0;
+//  toggle = (toggle == 1) ? 0 : 1;
+//  digitalWrite(4, toggle);
+    thisASKDriver->handleTimerInterrupt();
+}
+
 #endif
 
 // Convert a 6 bit encoded symbol into its 4 bit decoded equivalent
-uint8_t RH_ASK::symbol_6to4(uint8_t symbol)
+uint8_t INTERRUPT_ATTR RH_ASK::symbol_6to4(uint8_t symbol)
 {
     uint8_t i;
     uint8_t count;
@@ -606,7 +721,7 @@ void RH_ASK::validateRxBuf()
     }
 }
 
-void RH_ASK::receiveTimer()
+void INTERRUPT_ATTR RH_ASK::receiveTimer()
 {
     bool rxSample = readRx();
 
@@ -695,7 +810,7 @@ void RH_ASK::receiveTimer()
     }
 }
 
-void RH_ASK::transmitTimer()
+void INTERRUPT_ATTR RH_ASK::transmitTimer()
 {
     if (_txSample++ == 0)
     {
@@ -723,7 +838,7 @@ void RH_ASK::transmitTimer()
 	_txSample = 0;
 }
 
-void RH_ASK::handleTimerInterrupt()
+void INTERRUPT_ATTR RH_ASK::handleTimerInterrupt()
 {
     if (_mode == RHModeRx)
 	receiveTimer(); // Receiving
