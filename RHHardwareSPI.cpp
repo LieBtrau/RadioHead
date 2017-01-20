@@ -186,6 +186,58 @@ void RHHardwareSPI::begin()
     }
     SPI.begin(frequency, bitOrder, dataMode);
 
+#elif (RH_PLATFORM == RH_PLATFORM_STM32F103)
+
+    SPI.begin();
+    spi_mode dataMode;
+    // Hmmm, if we do this as a switch, GCC on maple gets v confused!
+    if (_dataMode == DataMode0)
+    dataMode = SPI_MODE_0;
+    else if (_dataMode == DataMode1)
+    dataMode = SPI_MODE_1;
+    else if (_dataMode == DataMode2)
+    dataMode = SPI_MODE_2;
+    else if (_dataMode == DataMode3)
+    dataMode = SPI_MODE_3;
+    else
+    dataMode = SPI_MODE_0;
+    SPI.setDataMode(dataMode);
+
+    ::BitOrder bitOrder;
+    if (_bitOrder == BitOrderLSBFirst)
+    bitOrder = LSBFIRST;
+    else
+    bitOrder = MSBFIRST;
+    SPI.setBitOrder(bitOrder);
+
+    uint32_t divider;
+    switch (_frequency)
+    {
+    case Frequency1MHz:
+    default:
+        divider = SPI_CLOCK_DIV64;
+        break;
+
+    case Frequency2MHz:
+        divider = SPI_CLOCK_DIV32;
+        break;
+
+    case Frequency4MHz:
+        divider = SPI_CLOCK_DIV16;
+        break;
+
+    case Frequency8MHz:
+        divider = SPI_CLOCK_DIV8;
+        break;
+
+    case Frequency16MHz:
+        divider = SPI_CLOCK_DIV2;
+        break;
+
+    }
+    SPI.setClockDivider(divider); // 8-ish MHz (full! speed!)
+
+
 #elif (RH_PLATFORM == RH_PLATFORM_STM32STD) // STM32F4 discovery
     uint8_t dataMode;
     if (_dataMode == DataMode0)

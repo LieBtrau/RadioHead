@@ -739,12 +739,12 @@
   #define RH_PLATFORM RH_PLATFORM_NRF51
  #elif defined(ESP8266)
   #define RH_PLATFORM RH_PLATFORM_ESP8266
- #elif defined(ARDUINO)
-  #define RH_PLATFORM RH_PLATFORM_ARDUINO
  #elif defined(__MSP430G2452__) || defined(__MSP430G2553__)
   #define RH_PLATFORM RH_PLATFORM_MSP430
  #elif defined(MCU_STM32F103RE)
   #define RH_PLATFORM RH_PLATFORM_STM32
+ #elif defined(MCU_STM32F103RB)
+  #define RH_PLATFORM RH_PLATFORM_STM32F103
  #elif defined(STM32F2XX)
   #define RH_PLATFORM RH_PLATFORM_STM32F2
  #elif defined(USE_STDPERIPH_DRIVER)
@@ -755,6 +755,9 @@
   #define RH_PLATFORM RH_PLATFORM_UNIX
 #elif defined(__APPLE__) // OSX
   #define RH_PLATFORM RH_PLATFORM_UNIX
+#elif defined(ARDUINO)
+ #define RH_PLATFORM RH_PLATFORM_ARDUINO
+
  #else
   #error Platform not defined! 	
  #endif
@@ -811,6 +814,18 @@
  #define PROGMEM
  #define memcpy_P memcpy
  #define Serial SerialUSB
+ #define RH_HAVE_SERIAL
+
+#elif (RH_PLATFORM == RH_PLATFORM_STM32F103)
+ #include <wirish.h>
+ #include <stdint.h>
+ #include <string.h>
+ #include <SPI.h>
+ #define RH_HAVE_HARDWARE_SPI
+ // Defines which timer to use on Maple
+ #define MAPLE_TIMER 1
+ #define PROGMEM
+ #define memcpy_P memcpy
  #define RH_HAVE_SERIAL
 
 #elif (RH_PLATFORM == RH_PLATFORM_STM32F2) // Particle Photon with firmware-develop
