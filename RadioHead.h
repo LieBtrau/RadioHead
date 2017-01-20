@@ -10,7 +10,7 @@
 /// via a variety of common data radios and other transports on a range of embedded microprocessors.
 ///
 /// The version of the package that this documentation refers to can be downloaded 
-/// from http://www.airspayce.com/mikem/arduino/RadioHead/RadioHead-1.66.zip
+/// from http://www.airspayce.com/mikem/arduino/RadioHead/RadioHead-1.67.zip
 /// You can find the latest version at http://www.airspayce.com/mikem/arduino/RadioHead
 ///
 /// You can also find online help and discussion at 
@@ -708,7 +708,7 @@
 
 // Official version numbers are maintained automatically by Makefile:
 #define RH_VERSION_MAJOR 1
-#define RH_VERSION_MINOR 66
+#define RH_VERSION_MINOR 67
 
 // Symbolic names for currently supported platform types
 #define RH_PLATFORM_ARDUINO          1

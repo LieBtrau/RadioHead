@@ -293,11 +293,11 @@ protected:
 
     /// Count of the number of bad messages (correct checksum etc) received
     volatile uint16_t   _txGood;
-    
+
     /// Channel activity detected
     volatile bool       _cad;
     unsigned int        _cad_timeout;
-
+    
 private:
 
 };

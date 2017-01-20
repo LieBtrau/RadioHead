@@ -14,6 +14,18 @@
 
 #include <RHSPIDriver.h>
 
+// If you don't want to use interupts (mainly to win one I/O pin) then
+// you just need to uncomment this line, if you're on Raspberry PI 
+// it will be set automaticly below
+//#define RH_RF69_IRQLESS
+
+#if (RH_PLATFORM == RH_PLATFORM_RASPI)
+// No IRQ used on Raspberry PI
+#ifndef RH_RF95_IRQLESS
+#define RH_RF95_IRQLESS
+#endif
+#endif // RH_PLATFORM_RASPI PI
+
 // This is the maximum number of interrupts the driver can support
 // Most Arduinos can handle 2, Megas can handle more
 #define RH_RF95_NUM_INTERRUPTS 3
@@ -219,6 +231,9 @@
 
 #define RH_RF95_PAYLOAD_CRC_ON                        0x04
 #define RH_RF95_SYM_TIMEOUT_MSB                       0x03
+
+// RH_RF95_REG_4B_TCXO                                0x4b
+#define RH_RF95_TCXO_TCXO_INPUT_ON                    0x10
 
 // RH_RF95_REG_4D_PA_DAC                              0x4d
 #define RH_RF95_PA_DAC_DISABLE                        0x04
@@ -462,6 +477,14 @@
 /// At 20dBm (100mW) with Bw = 125 kHz, Cr = 4/5, Sf = 128chips/symbol, CRC on. 
 /// (Default medium range) in the conditions described above.
 /// - Range over flat ground through heavy trees and vegetation approx 2km.
+///
+/// Caution: the performance of this radio, especially with narrow bandwidths is strongly dependent on the
+/// accuracy and stability of the chip clock. HopeRF and Semtech do not appear to 
+/// recommend bandwidths of less than 62.5 kHz 
+/// unless you have the optional Temperature Compensated Crystal Oscillator (TCXO) installed and 
+/// enabled on your radio module. See the refernece manual for more data.
+/// Also https://lowpowerlab.com/forum/rf-range-antennas-rfm69-library/lora-library-experiences-range/15/
+/// and http://www.semtech.com/images/datasheet/an120014-xo-guidance-lora-modulation.pdf
 /// 
 /// \par Transmitter Power
 ///
@@ -605,6 +628,13 @@ public:
     /// \return true if index is a valid choice.
     bool        setModemConfig(ModemConfigChoice index);
 
+    /// Get the values of one of the predefined modem configurations.
+    /// 
+    /// \param[in] index The configuration choice.
+    /// \param[in] config A ModemConfig structure that will contains values of the modem configuration values.
+    /// \return true if index is a valid choice and config has been filled with values
+    bool        getModemConfig(ModemConfigChoice index, ModemConfig* config);
+
     /// Tests whether a new message is available
     /// from the Driver. 
     /// On most drivers, this will also put the Driver into RHModeRx mode until
@@ -635,6 +665,13 @@ public:
     /// \return true if the message length was valid and it was correctly queued for transmit. Return false
     /// if CAD was requested and the CAD timeout timed out before clear channel was detected.
     virtual bool    send(const uint8_t* data, uint8_t len);
+
+    /// Blocks until the current message (if any) 
+    /// has been transmitted
+    /// \return true on success, false if the chip is not in transmit mode or other transmit failure
+#ifdef RH_RF95_IRQLESS
+    virtual bool   waitPacketSent();
+#endif
 
     /// Sets the length of the preamble
     /// in bytes. 
@@ -705,11 +742,22 @@ public:
     /// \return true if channel is in use.  
     virtual bool    isChannelActive();
 
+    /// Enable TCXO mode
+    /// Call this immediately after init(), to force your radio to use an external 
+    /// frequency source, such as a Temperature Compensated Crystal Oscillator (TCXO).
+    /// See the comments in the main documentation about the sensitivity of this radio to
+    /// clock frequency especially when using narrow bandwidths.
+    /// Leaves the module in sleep mode.
+    /// Caution, this function has not been tested by us.
+    void enableTCXO();
+
 protected:
     /// This is a low level function to handle the interrupts for one instance of RH_RF95.
     /// Called automatically by isr*()
     /// Should not need to be called by user code.
+#ifndef RH_RF95_IRQLESS
     void           handleInterrupt();
+#endif
 
     /// Examine the revceive buffer to determine whether the message is for this node
     void validateRxBuf();
@@ -718,6 +766,8 @@ protected:
     void clearRxBuf();
 
 private:
+
+#ifndef RH_RF95_IRQLESS
     /// Low level interrupt service routine for device connected to interrupt 0
     static void         isr0();
 
@@ -739,6 +789,8 @@ private:
     /// The index into _deviceForInterrupt[] for this device (if an interrupt is already allocated)
     /// else 0xff
     uint8_t             _myInterruptIndex;
+
+#endif
 
     /// Number of octets in the buffer
     volatile uint8_t    _bufLen;
