@@ -17,7 +17,7 @@
 // If you don't want to use interupts (mainly to win one I/O pin) then
 // you just need to uncomment this line, if you're on Raspberry PI 
 // it will be set automaticly below
-//#define RH_RF69_IRQLESS
+//#define RH_RF95_IRQLESS
 
 #if (RH_PLATFORM == RH_PLATFORM_RASPI)
 // No IRQ used on Raspberry PI
@@ -608,7 +608,7 @@ public:
     /// Initialise the Driver transport hardware and software.
     /// Make sure the Driver is properly configured before calling init().
     /// \return true if initialisation succeeded.
-    virtual bool    init();
+    /*virtual*/ bool    init();
 
     /// Prints the value of all chip registers
     /// to the Serial device if RH_HAVE_SERIAL is defined for the current platform
@@ -641,7 +641,7 @@ public:
     /// a message is actually received by the transport, when it wil be returned to RHModeIdle.
     /// This can be called multiple times in a timeout loop
     /// \return true if a new, complete, error-free uncollected message is available to be retreived by recv()
-    virtual bool    available();
+    /*virtual*/ bool    available();
 
     /// Turns the receiver on if it not already on.
     /// If there is a valid message available, copy it to buf and return true
@@ -652,7 +652,7 @@ public:
     /// \param[in] buf Location to copy the received message
     /// \param[in,out] len Pointer to available space in buf. Set to the actual number of octets copied.
     /// \return true if a valid message was copied to buf
-    virtual bool    recv(uint8_t* buf, uint8_t* len);
+    /*virtual*/ bool    recv(uint8_t* buf, uint8_t* len);
 
     /// Waits until any previous transmit packet is finished being transmitted with waitPacketSent().
     /// Then optionally waits for Channel Activity Detection (CAD) 
@@ -664,13 +664,13 @@ public:
     /// specify the maximum time in ms to wait. If 0 (the default) do not wait for CAD before transmitting.
     /// \return true if the message length was valid and it was correctly queued for transmit. Return false
     /// if CAD was requested and the CAD timeout timed out before clear channel was detected.
-    virtual bool    send(const uint8_t* data, uint8_t len);
+    /*virtual*/ bool    send(const uint8_t* data, uint8_t len);
 
     /// Blocks until the current message (if any) 
     /// has been transmitted
     /// \return true on success, false if the chip is not in transmit mode or other transmit failure
 #ifdef RH_RF95_IRQLESS
-    virtual bool   waitPacketSent();
+    /*virtual*/ bool   waitPacketSent();
 #endif
 
     /// Sets the length of the preamble
@@ -684,7 +684,7 @@ public:
     /// Returns the maximum message length 
     /// available in this Driver.
     /// \return The maximum legal message length
-    virtual uint8_t maxMessageLength();
+    /*virtual*/ uint8_t maxMessageLength();
 
     /// Sets the transmitter and receiver 
     /// centre frequency.
@@ -731,7 +731,7 @@ public:
     /// changing mode it idle, transmit or receive (eg by calling send(), recv(), available() etc)
     /// Caution: there is a time penalty as the radio takes a finite time to wake from sleep mode.
     /// \return true if sleep mode was successfully entered.
-    virtual bool    sleep();
+    /*virtual*/ bool    sleep();
 
     // Bent G Christensen (bentor@gmail.com), 08/15/2016
     /// Use the radio's Channel Activity Detect (CAD) function to detect channel activity.
@@ -740,7 +740,7 @@ public:
     /// with a reasonable time backoff algorithm.
     /// This is called automatically by waitCAD().
     /// \return true if channel is in use.  
-    virtual bool    isChannelActive();
+    /*virtual*/ bool    isChannelActive();
 
     /// Enable TCXO mode
     /// Call this immediately after init(), to force your radio to use an external 

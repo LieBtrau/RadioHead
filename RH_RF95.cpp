@@ -49,9 +49,6 @@ bool RH_RF95::init()
     int interruptNumber = digitalPinToInterrupt(_interruptPin);
     if (interruptNumber == NOT_AN_INTERRUPT)
 	return false;
-#ifdef RH_ATTACHINTERRUPT_TAKES_PIN_NUMBER
-    interruptNumber = _interruptPin;
-#endif
 #endif // ndef RH_RF95_IRQLESS
 
     // Get the device type and check it
@@ -82,7 +79,7 @@ bool RH_RF95::init()
     // Set up interrupt handler
     // Since there are a limited number of interrupt glue functions isr*() available,
     // we can only support a limited number of devices simultaneously
-    // ON some devices, notably most Arduinos, the interrupt pin passed in is actuallt the 
+    // ON some devices, notably most Arduinos, the interrupt pin passed in is actually the
     // interrupt number. You have to figure out the interruptnumber-to-interruptpin mapping
     // yourself based on knwledge of what Arduino board you are running on.
     if (_myInterruptIndex == 0xff)
@@ -298,8 +295,10 @@ bool RH_RF95::send(const uint8_t* data, uint8_t len)
     waitPacketSent(); // Make sure we dont interrupt an outgoing message
     setModeIdle();
 
-    if (!waitCAD()) 
-	return false;  // Check channel activity
+    if (!waitCAD())
+    {
+        return false;  // Check channel activity
+    }
 
     // Position at the beginning of the FIFO
     spiWrite(RH_RF95_REG_0D_FIFO_ADDR_PTR, 0);

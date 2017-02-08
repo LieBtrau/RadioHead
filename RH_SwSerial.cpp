@@ -6,7 +6,7 @@
 #include <RH_SwSerial.h>
 #include <RHCRC.h>
 
-#if (RH_PLATFORM == RH_PLATFORM_STM32F2) || (RH_PLATFORM == RH_PLATFORM_STM32F103)
+#if (RH_PLATFORM == RH_PLATFORM_STM32F2) || (RH_PLATFORM == RH_PLATFORM_STM32F103) || defined(ARDUINO_ARCH_SAM)
 #else
  #include <SoftwareSerial.h>
 
