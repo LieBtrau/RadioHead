@@ -18,11 +18,7 @@
 RHReliableDatagram::RHReliableDatagram(RHGenericDriver& driver, uint8_t thisAddress) 
     : RHDatagram(driver, thisAddress)
 {
-    _retransmissions = 0;
-    _lastSequenceNumber = 0;
-    _timeout = RH_DEFAULT_TIMEOUT;
-    _retries = RH_DEFAULT_RETRIES;
-    memset(_seenIds, 0, sizeof(_seenIds));
+    resetDatagram();
 }
 
 ////////////////////////////////////////////////////////////////////
@@ -170,6 +166,15 @@ uint32_t RHReliableDatagram::retransmissions()
 void RHReliableDatagram::resetRetransmissions()
 {
     _retransmissions = 0;
+}
+
+void RHReliableDatagram::resetDatagram()
+{
+    _retransmissions = 0;
+    _lastSequenceNumber = 0;
+    _timeout = RH_DEFAULT_TIMEOUT;
+    _retries = RH_DEFAULT_RETRIES;
+    memset(_seenIds, 0, sizeof(_seenIds));
 }
  
 void RHReliableDatagram::acknowledge(uint8_t id, uint8_t from)
